@@ -21,6 +21,9 @@ A Go-based tool for scanning GitHub repositories for leaked API keys and securit
 - Environment-based configuration
 - Sensitive data redaction
 - Rate limiting
+- Progress tracking
+- File size and extension filtering
+- Scan statistics
 
 ## Installation
 
@@ -44,6 +47,7 @@ RATE_LIMIT=30
 
 # Output Configuration
 OUTPUT_FILE=findings.json
+OUTPUT_FORMAT=json  # or 'text'
 
 # Logging Configuration
 LOG_LEVEL=info
@@ -52,6 +56,13 @@ LOG_FORMAT=json
 # Security Settings
 ENABLE_REDACTION=true
 REDACTION_PATTERN=****
+
+# File Filtering
+MAX_FILE_SIZE=1048576  # 1MB in bytes
+FILE_EXTENSIONS=py,js,json,env  # Comma-separated list
+
+# Progress Display
+SHOW_PROGRESS=true
 ```
 
 ### Environment Variables
@@ -61,11 +72,15 @@ REDACTION_PATTERN=****
 | GITHUB_TOKEN | GitHub personal access token | (required) |
 | RATE_LIMIT | Maximum requests per minute | 30 |
 | OUTPUT_FILE | Output file for findings | findings.json |
+| OUTPUT_FORMAT | Output format (json/text) | json |
 | LOG_LEVEL | Logging level (debug, info, warn, error) | info |
 | LOG_FORMAT | Log format (json, text) | json |
 | ENABLE_REDACTION | Enable redaction of sensitive data | true |
 | REDACTION_PATTERN | Pattern to use for redaction | **** |
 | HTTP_TIMEOUT | HTTP client timeout | 30s |
+| MAX_FILE_SIZE | Maximum file size to scan (bytes) | 1048576 (1MB) |
+| FILE_EXTENSIONS | Comma-separated list of file extensions to scan | (all files) |
+| SHOW_PROGRESS | Show progress during scan | true |
 
 ## Usage
 
@@ -76,12 +91,36 @@ REDACTION_PATTERN=****
    go run main.go -query "your search query"
    ```
 
-### Example
+### Examples
 
-To search for potential API keys in Python files:
+Search for potential API keys in Python files:
 ```bash
 go run main.go -query "filename:*.py"
 ```
+
+Search in specific file extensions:
+```bash
+# In .env file:
+FILE_EXTENSIONS=py,js,json
+```
+
+Limit file size:
+```bash
+# In .env file:
+MAX_FILE_SIZE=524288  # 512KB
+```
+
+## Output
+
+The tool provides:
+1. Real-time progress display
+2. Scan statistics:
+   - Total files found
+   - Files scanned
+   - Files skipped
+   - Total findings
+   - Scan duration
+3. Findings saved to file in JSON or text format
 
 ## Security Notes
 

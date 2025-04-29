@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -45,6 +46,15 @@ type SecurityFinding struct {
 	Timestamp   time.Time
 }
 
+type ScanStats struct {
+	TotalFiles     int
+	ScannedFiles   int
+	SkippedFiles   int
+	FindingsCount  int
+	StartTime      time.Time
+	EndTime        time.Time
+}
+
 func init() {
 	flag.StringVar(&searchQuery, "query", "", "Search query for GitHub repositories")
 	flag.Parse()
@@ -68,6 +78,43 @@ func redactSensitiveData(input string, redactionPattern string) string {
 		input = pattern.ReplaceAllString(input, redactionPattern)
 	}
 	return input
+}
+
+func shouldSkipFile(path string, size int64, extensions []string, maxSize int64) bool {
+	// Skip if file is too large
+	if size > maxSize {
+		return true
+	}
+
+	// Skip if extensions are specified and file doesn't match
+	if len(extensions) > 0 {
+		ext := strings.ToLower(filepath.Ext(path))
+		if ext == "" {
+			return true
+		}
+		ext = ext[1:] // Remove the dot
+		skip := true
+		for _, allowed := range extensions {
+			if ext == strings.ToLower(allowed) {
+				skip = false
+				break
+			}
+		}
+		if skip {
+			return true
+		}
+	}
+
+	return false
+}
+
+func printProgress(stats *ScanStats) {
+	if stats.TotalFiles == 0 {
+		return
+	}
+	progress := float64(stats.ScannedFiles) / float64(stats.TotalFiles) * 100
+	fmt.Printf("\rProgress: %.1f%% (%d/%d files) | Findings: %d | Skipped: %d",
+		progress, stats.ScannedFiles, stats.TotalFiles, stats.FindingsCount, stats.SkippedFiles)
 }
 
 func main() {
@@ -126,11 +173,16 @@ func main() {
 		logrus.WithError(err).Fatal("Error searching GitHub")
 	}
 
-	logrus.WithField("total_results", results.GetTotal()).Info("Search completed")
+	stats := &ScanStats{
+		TotalFiles: len(results.CodeResults),
+		StartTime:  time.Now(),
+	}
+
+	logrus.WithField("total_results", stats.TotalFiles).Info("Search completed")
 
 	var findings []SecurityFinding
 
-	for _, result := range results.CodeResults {
+	for i, result := range results.CodeResults {
 		// Respect rate limit
 		if err := limiter.Wait(ctx); err != nil {
 			logrus.WithError(err).Error("Rate limit exceeded")
@@ -148,11 +200,19 @@ func main() {
 			continue
 		}
 
+		// Skip if file doesn't meet criteria
+		if shouldSkipFile(path, int64(content.GetSize()), cfg.FileExtensions, cfg.MaxFileSize) {
+			stats.SkippedFiles++
+			continue
+		}
+
 		decodedContent, err := content.GetContent()
 		if err != nil {
 			logrus.WithError(err).WithField("url", htmlURL).Error("Error decoding content")
 			continue
 		}
+
+		stats.ScannedFiles++
 
 		// Split content into lines for better context
 		lines := strings.Split(decodedContent, "\n")
@@ -196,6 +256,7 @@ func main() {
 						}
 
 						findings = append(findings, finding)
+						stats.FindingsCount++
 
 						logrus.WithFields(logrus.Fields{
 							"type":        patternName,
@@ -208,10 +269,24 @@ func main() {
 				}
 			}
 		}
+
+		// Show progress if enabled
+		if cfg.ShowProgress {
+			printProgress(stats)
+		}
 	}
 
+	stats.EndTime = time.Now()
+
+	// Print final statistics
+	fmt.Printf("\n\nScan completed in %v\n", stats.EndTime.Sub(stats.StartTime))
+	fmt.Printf("Total files: %d\n", stats.TotalFiles)
+	fmt.Printf("Scanned files: %d\n", stats.ScannedFiles)
+	fmt.Printf("Skipped files: %d\n", stats.SkippedFiles)
+	fmt.Printf("Total findings: %d\n", stats.FindingsCount)
+
 	// Save findings to file
-	if err := saveFindings(findings, cfg.OutputFile); err != nil {
+	if err := saveFindings(findings, cfg.OutputFile, cfg.OutputFormat); err != nil {
 		logrus.WithError(err).Error("Error saving findings")
 	}
 }
@@ -230,9 +305,9 @@ func min(a, b int) int {
 	return b
 }
 
-func saveFindings(findings []SecurityFinding, outputFile string) error {
+func saveFindings(findings []SecurityFinding, outputFile string, format string) error {
 	// Implement saving findings to file
-	// This is a placeholder - you should implement proper JSON serialization
+	// This is a placeholder - you should implement proper JSON/text serialization
 	// and file handling with appropriate error checking
 	return nil
 } 
