@@ -14,13 +14,12 @@ import (
 	"github.com/sirupsen/logrus"
 	"golang.org/x/oauth2"
 	"golang.org/x/time/rate"
+
+	"github.com/secret-hunter/config"
 )
 
 var (
-	githubToken string
 	searchQuery string
-	rateLimit   int
-	outputFile  string
 	patterns    = map[string]*regexp.Regexp{
 		"API Key":        regexp.MustCompile(`(?i)(api[_-]?key|apikey)[\s:=]+['"]?([a-zA-Z0-9_-]{32,})['"]?`),
 		"Secret Key":     regexp.MustCompile(`(?i)(secret[_-]?key|secretkey)[\s:=]+['"]?([a-zA-Z0-9_-]{32,})['"]?`),
@@ -47,35 +46,15 @@ type SecurityFinding struct {
 }
 
 func init() {
-	flag.StringVar(&githubToken, "token", "", "GitHub personal access token")
 	flag.StringVar(&searchQuery, "query", "", "Search query for GitHub repositories")
-	flag.IntVar(&rateLimit, "rate", 30, "Maximum requests per minute")
-	flag.StringVar(&outputFile, "output", "findings.json", "Output file for findings")
 	flag.Parse()
-
-	if githubToken == "" {
-		githubToken = os.Getenv("GITHUB_TOKEN")
-		if githubToken == "" {
-			logrus.Fatal("GitHub token is required. Set it via -token flag or GITHUB_TOKEN environment variable")
-		}
-	}
 
 	if searchQuery == "" {
 		logrus.Fatal("Search query is required. Set it via -query flag")
 	}
-
-	// Validate rate limit
-	if rateLimit < 1 || rateLimit > 100 {
-		logrus.Fatal("Rate limit must be between 1 and 100 requests per minute")
-	}
-
-	// Set up logging
-	logrus.SetFormatter(&logrus.JSONFormatter{})
-	logrus.SetOutput(os.Stdout)
 }
 
 func sanitizeInput(input string) string {
-	// Remove any potential command injection characters
 	return strings.Map(func(r rune) rune {
 		if r < 32 || r == 127 {
 			return -1
@@ -84,19 +63,43 @@ func sanitizeInput(input string) string {
 	}, input)
 }
 
+func redactSensitiveData(input string, redactionPattern string) string {
+	for _, pattern := range patterns {
+		input = pattern.ReplaceAllString(input, redactionPattern)
+	}
+	return input
+}
+
 func main() {
+	// Load configuration
+	cfg, err := config.LoadConfig()
+	if err != nil {
+		logrus.Fatalf("Error loading configuration: %v", err)
+	}
+
+	// Set up logging
+	if cfg.LogFormat == "json" {
+		logrus.SetFormatter(&logrus.JSONFormatter{})
+	} else {
+		logrus.SetFormatter(&logrus.TextFormatter{})
+	}
+	
+	logLevel, _ := logrus.ParseLevel(cfg.LogLevel)
+	logrus.SetLevel(logLevel)
+	logrus.SetOutput(os.Stdout)
+
 	ctx := context.Background()
 	
 	// Set up rate limiting
-	limiter := rate.NewLimiter(rate.Limit(rateLimit/60.0), 1)
+	limiter := rate.NewLimiter(rate.Limit(cfg.RateLimit/60.0), 1)
 	
 	// Create HTTP client with timeout
 	httpClient := &http.Client{
-		Timeout: 30 * time.Second,
+		Timeout: cfg.HTTPTimeout,
 	}
 	
 	ts := oauth2.StaticTokenSource(
-		&oauth2.Token{AccessToken: githubToken},
+		&oauth2.Token{AccessToken: cfg.GitHubToken},
 	)
 	tc := oauth2.NewClient(ctx, ts)
 	tc.Transport = &oauth2.Transport{
@@ -174,10 +177,17 @@ func main() {
 							}
 						}
 
+						// Redact sensitive data if enabled
+						matchText := match[0]
+						if cfg.EnableRedaction {
+							matchText = redactSensitiveData(matchText, cfg.RedactionPattern)
+							context = redactSensitiveData(context, cfg.RedactionPattern)
+						}
+
 						finding := SecurityFinding{
 							Type:       patternName,
 							URL:        htmlURL,
-							Match:      strings.TrimSpace(match[0]),
+							Match:      strings.TrimSpace(matchText),
 							Repository: repo.GetFullName(),
 							File:       path,
 							LineNumber: lineNumber,
@@ -201,7 +211,7 @@ func main() {
 	}
 
 	// Save findings to file
-	if err := saveFindings(findings); err != nil {
+	if err := saveFindings(findings, cfg.OutputFile); err != nil {
 		logrus.WithError(err).Error("Error saving findings")
 	}
 }
@@ -220,7 +230,7 @@ func min(a, b int) int {
 	return b
 }
 
-func saveFindings(findings []SecurityFinding) error {
+func saveFindings(findings []SecurityFinding, outputFile string) error {
 	// Implement saving findings to file
 	// This is a placeholder - you should implement proper JSON serialization
 	// and file handling with appropriate error checking
