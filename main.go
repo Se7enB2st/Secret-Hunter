@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/fatih/color"
 	"github.com/google/go-github/v56/github"
 	"github.com/sirupsen/logrus"
 	"golang.org/x/oauth2"
@@ -113,7 +114,7 @@ func printProgress(stats *ScanStats) {
 		return
 	}
 	progress := float64(stats.ScannedFiles) / float64(stats.TotalFiles) * 100
-	fmt.Printf("\rProgress: %.1f%% (%d/%d files) | Findings: %d | Skipped: %d",
+	color.Cyan("\rProgress: %.1f%% (%d/%d files) | Findings: %d | Skipped: %d",
 		progress, stats.ScannedFiles, stats.TotalFiles, stats.FindingsCount, stats.SkippedFiles)
 }
 
@@ -121,7 +122,8 @@ func main() {
 	// Load configuration
 	cfg, err := config.LoadConfig()
 	if err != nil {
-		logrus.Fatalf("Error loading configuration: %v", err)
+		color.Red("Error loading configuration: %v", err)
+		os.Exit(1)
 	}
 
 	// Set up logging
@@ -170,7 +172,8 @@ func main() {
 
 	results, _, err := client.Search.Code(ctx, searchQuery, opts)
 	if err != nil {
-		logrus.WithError(err).Fatal("Error searching GitHub")
+		color.Red("Error searching GitHub: %v", err)
+		os.Exit(1)
 	}
 
 	stats := &ScanStats{
@@ -178,14 +181,14 @@ func main() {
 		StartTime:  time.Now(),
 	}
 
-	logrus.WithField("total_results", stats.TotalFiles).Info("Search completed")
+	color.Green("Found %d files to scan", stats.TotalFiles)
 
 	var findings []SecurityFinding
 
-	for i, result := range results.CodeResults {
+	for _, result := range results.CodeResults {
 		// Respect rate limit
 		if err := limiter.Wait(ctx); err != nil {
-			logrus.WithError(err).Error("Rate limit exceeded")
+			color.Yellow("Rate limit exceeded: %v", err)
 			break
 		}
 
@@ -196,7 +199,7 @@ func main() {
 		// Get file content
 		content, _, _, err := client.Repositories.GetContents(ctx, repo.GetOwner().GetLogin(), repo.GetName(), path, nil)
 		if err != nil {
-			logrus.WithError(err).WithField("url", htmlURL).Error("Error getting content")
+			color.Yellow("Error getting content for %s: %v", htmlURL, err)
 			continue
 		}
 
@@ -208,7 +211,7 @@ func main() {
 
 		decodedContent, err := content.GetContent()
 		if err != nil {
-			logrus.WithError(err).WithField("url", htmlURL).Error("Error decoding content")
+			color.Yellow("Error decoding content for %s: %v", htmlURL, err)
 			continue
 		}
 
@@ -258,13 +261,14 @@ func main() {
 						findings = append(findings, finding)
 						stats.FindingsCount++
 
-						logrus.WithFields(logrus.Fields{
-							"type":        patternName,
-							"url":         htmlURL,
-							"repository":  repo.GetFullName(),
-							"file":        path,
-							"line_number": lineNumber,
-						}).Warn("Found potential security issue")
+						color.Yellow("Found potential %s in %s", patternName, htmlURL)
+						color.White("Repository: %s", repo.GetFullName())
+						color.White("File: %s", path)
+						color.White("Line: %d", lineNumber)
+						if context != "" {
+							color.White("Context:\n%s", context)
+						}
+						color.White("---")
 					}
 				}
 			}
@@ -279,15 +283,17 @@ func main() {
 	stats.EndTime = time.Now()
 
 	// Print final statistics
-	fmt.Printf("\n\nScan completed in %v\n", stats.EndTime.Sub(stats.StartTime))
-	fmt.Printf("Total files: %d\n", stats.TotalFiles)
-	fmt.Printf("Scanned files: %d\n", stats.ScannedFiles)
-	fmt.Printf("Skipped files: %d\n", stats.SkippedFiles)
-	fmt.Printf("Total findings: %d\n", stats.FindingsCount)
+	color.Green("\n\nScan completed in %v", stats.EndTime.Sub(stats.StartTime))
+	color.White("Total files: %d", stats.TotalFiles)
+	color.White("Scanned files: %d", stats.ScannedFiles)
+	color.White("Skipped files: %d", stats.SkippedFiles)
+	color.Yellow("Total findings: %d", stats.FindingsCount)
 
 	// Save findings to file
 	if err := saveFindings(findings, cfg.OutputFile, cfg.OutputFormat); err != nil {
-		logrus.WithError(err).Error("Error saving findings")
+		color.Red("Error saving findings: %v", err)
+	} else {
+		color.Green("Findings saved to %s", cfg.OutputFile)
 	}
 }
 
